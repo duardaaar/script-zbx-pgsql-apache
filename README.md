@@ -53,8 +53,8 @@ Script em Bash que instala e configura um servidor **Zabbix 7.0 LTS** completo e
 **1. Clone o repositório no servidor**
 
 ```bash
-git clone https://github.com/<seu-usuario>/<seu-repositorio>.git
-cd <seu-repositorio>
+git clone https://github.com/duardaaar/script-zbx-pgsql-apache.git
+cd script-zbx-pgsql-apache
 ```
 
 **2. Crie o arquivo `.env` a partir do modelo**
