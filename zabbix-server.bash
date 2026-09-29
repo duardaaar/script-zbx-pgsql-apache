@@ -3,6 +3,13 @@
 #  Instalação do Zabbix 7.0 LTS
 #  Stack: Ubuntu 26.04 + PostgreSQL + Apache + Zabbix Agent 2
 #
+#  Parâmetros (no .env ou como variáveis de ambiente):
+#     ZBX_DB_PASS   senha do usuário "zabbix" no PostgreSQL (se vazia, é perguntada)
+#     ZBX_DB_NAME   nome do banco               (padrão: zabbix)
+#     ZBX_DB_USER   usuário do banco            (padrão: zabbix)
+#     ZBX_TZ        timezone do frontend/PHP    (padrão: America/Sao_Paulo)
+#     ZBX_NAME      nome exibido no frontend    (padrão: hostname)
+#
 #  Prioridade: variável de ambiente na linha de comando > .env > padrão.
 # =============================================================================
 set -Eeuo pipefail
