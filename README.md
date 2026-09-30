@@ -31,6 +31,7 @@ Script em Bash que instala e configura um servidor **Zabbix 7.0 LTS** completo e
 - Ubuntu **26.04** recém-instalado (servidor ou VM dedicada)
 - Acesso **root** ou usuário com `sudo`
 - Acesso à internet (repositórios do Ubuntu e `repo.zabbix.com`)
+- Data e hora corretas — o script tenta sincronizar via NTP automaticamente
 - Recomendado para ambientes pequenos: **2 vCPU, 4 GB de RAM, 20 GB de disco**
 
 > 💡 Se estiver usando VM, tire um **snapshot antes da instalação**. É a forma mais rápida de voltar ao estado inicial para testar novamente.
@@ -106,7 +107,7 @@ ZBX_NAME=zbxserver
 
 - O `.env` é **opcional**. Sem ele, o script usa os valores padrão e **pergunta a senha** durante a execução.
 - Valores podem ser escritos com ou sem aspas: `ZBX_DB_PASS=abc`, `"abc"` ou `'abc'`.
-- Linhas em branco e comentários (`#`) são ignorados.
+- Linhas em branco e linhas que começam com `#` são ignoradas. **Não use comentário no fim da linha** (`ZBX_DB_PASS=abc # senha`): todo o texto após o `=` vira o valor.
 - A senha pode ter caracteres especiais (`$`, `!`, `#`, `@`...), **exceto aspas simples (`'`)**.
 - Arquivos editados no Windows (quebra de linha CRLF) funcionam normalmente.
 
@@ -134,16 +135,17 @@ sudo ZBX_NAME=zabbix-teste bash zabbix-server.bash
 
 1. Verifica se está rodando como root e em Ubuntu
 2. Carrega os parâmetros do `.env`
-3. Gera os locales `en_US.UTF-8` e `pt_BR.UTF-8` e ajusta o fuso horário
-4. Adiciona o repositório oficial do Zabbix 7.0
+3. Sincroniza o relógio (NTP) e aguarda o apt ficar livre, caso as atualizações automáticas do Ubuntu estejam rodando
+4. Gera os locales `en_US.UTF-8` e `pt_BR.UTF-8` e ajusta o fuso horário
+5. Adiciona o repositório oficial do Zabbix 7.0
    - se ainda não houver pacote específico para o Ubuntu 26.04, usa o do 24.04 e avisa
-5. Instala PostgreSQL, Apache, PHP-FPM, Zabbix Server, Frontend e Agent 2
-6. Cria o usuário e o banco no PostgreSQL e importa o schema inicial
-7. Configura o `zabbix_server.conf`
-8. Configura o Apache (`proxy`, `proxy_fcgi`) e o PHP-FPM (fuso horário, limites de memória e tempo)
-9. Cria o `zabbix.conf.php` — **o assistente de instalação web é pulado**
-10. Libera as portas no UFW (somente se ele estiver ativo)
-11. Inicia os serviços e mostra o status de cada um
+6. Instala PostgreSQL, Apache, PHP-FPM, Zabbix Server, Frontend e Agent 2
+7. Cria o usuário e o banco no PostgreSQL e importa o schema inicial
+8. Configura o `zabbix_server.conf`
+9. Configura o Apache (`proxy`, `proxy_fcgi`) e o PHP-FPM (fuso horário, limites de memória e tempo)
+10. Cria o `zabbix.conf.php` — **o assistente de instalação web é pulado**
+11. Libera as portas no UFW (somente se ele estiver ativo)
+12. Inicia os serviços e mostra o status de cada um
 
 Todo o processo é registrado em `/var/log/zabbix_install_<data>_<hora>.log`.
 
@@ -214,9 +216,33 @@ sudo bash remove.bash -y
 
 **Consultar o log da instalação**
 
+Quando algo falha, o script mostra na tela as **últimas linhas do log**. Para ver o log mais recente completo:
+
 ```bash
 ls -t /var/log/zabbix_install_*.log | head -1 | xargs less
 ```
+
+**`Release file ... is not valid yet`**
+
+O relógio do servidor está errado. O script tenta corrigir sozinho, mas se o NTP estiver bloqueado na rede:
+
+```bash
+timedatectl                       # veja "System clock synchronized"
+sudo timedatectl set-ntp true
+sudo date -s "$(curl -sI http://archive.ubuntu.com/ubuntu/ | grep -i '^date:' | cut -d' ' -f2-)"
+```
+
+Em VMs, confira também a hora do **host** (VMware, Hyper-V, Proxmox).
+
+**`Could not get lock /var/lib/dpkg/lock-frontend`**
+
+As atualizações automáticas do Ubuntu estão rodando (comum logo após acertar o relógio). O script espera até 10 minutos. Se passar disso, aguarde terminar e rode de novo:
+
+```bash
+pgrep -af unattended-upgr
+```
+
+> Não mate o processo com `kill` — isso pode deixar pacotes corrompidos.
 
 **Um serviço ficou inativo**
 

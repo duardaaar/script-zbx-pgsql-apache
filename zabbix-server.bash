@@ -3,6 +3,10 @@
 #  Instalação do Zabbix 7.0 LTS
 #  Stack: Ubuntu 26.04 + PostgreSQL + Apache + Zabbix Agent 2
 #
+#  Uso:
+#     sudo bash install_zabbix7_pgsql_apache.sh                  # lê ./.env ao lado do script
+#     sudo bash install_zabbix7_pgsql_apache.sh --env /caminho/arquivo.env
+#
 #  Parâmetros (no .env ou como variáveis de ambiente):
 #     ZBX_DB_PASS   senha do usuário "zabbix" no PostgreSQL (se vazia, é perguntada)
 #     ZBX_DB_NAME   nome do banco               (padrão: zabbix)
@@ -23,7 +27,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --env)   ENV_FILE="${2:?Informe o caminho do arquivo após --env}"; shift 2 ;;
         --env=*) ENV_FILE="${1#*=}"; shift ;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        -h|--help) sed -n "3,/^# ====/p" "$0"; exit 0 ;;
         *) echo "Parâmetro desconhecido: $1"; exit 1 ;;
     esac
 done
@@ -77,7 +81,39 @@ GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC}  $*" | tee -a "$LOG_FILE"; }
 warn()  { echo -e "${YELLOW}[AVISO]${NC} $*" | tee -a "$LOG_FILE"; }
 fatal() { echo -e "${RED}[ERRO]${NC}  $*" | tee -a "$LOG_FILE"; exit 1; }
-trap 'fatal "Falha na linha $LINENO. Veja o log: $LOG_FILE"' ERR
+trap 'echo "----- últimas linhas do log -----"; tail -n 15 "$LOG_FILE"; echo "---------------------------------"; fatal "Falha na linha $LINENO. Log completo: $LOG_FILE"' ERR
+
+# O apt rejeita repositórios com data "no futuro" ("Release file ... is not
+# valid yet") quando o relógio do servidor está atrasado. Sincroniza antes.
+sync_clock() {
+    info "Verificando sincronização do relógio (NTP)..."
+    timedatectl set-ntp true >>"$LOG_FILE" 2>&1 || true
+    if command -v chronyc >/dev/null; then chronyc -a makestep >>"$LOG_FILE" 2>&1 || true; fi
+    local i
+    for i in $(seq 1 30); do
+        if [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" == "yes" ]]; then
+            info "Relógio sincronizado: $(date)"
+            return 0
+        fi
+        sleep 1
+    done
+
+    # NTP bloqueado (porta 123/UDP)? Usa o cabeçalho Date de um servidor HTTP.
+    warn "NTP não sincronizou em 30s; ajustando o relógio pelo horário HTTP..."
+    local http_date=""
+    if command -v curl >/dev/null; then
+        http_date=$(curl -sI --max-time 10 http://archive.ubuntu.com/ubuntu/ 2>/dev/null \
+                    | awk -F': ' 'tolower($1)=="date"{print $2}' | tr -d '\r')
+    elif command -v wget >/dev/null; then
+        http_date=$(wget -qS --spider --timeout=10 http://archive.ubuntu.com/ubuntu/ 2>&1 \
+                    | awk -F': ' 'tolower($1)~/date$/{print $2}' | tail -n1 | tr -d '\r')
+    fi
+    if [[ -n "$http_date" ]] && date -s "$http_date" >>"$LOG_FILE" 2>&1; then
+        info "Relógio ajustado para: $(date)"
+    else
+        warn "Não foi possível ajustar o relógio. Se o apt falhar com 'not valid yet', corrija a data/hora do servidor."
+    fi
+}
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -108,8 +144,14 @@ fi
 # 2. Pacotes base e locale
 # -----------------------------------------------------------------------------
 info "Atualizando sistema e instalando dependências básicas..."
-apt-get update -y >>"$LOG_FILE" 2>&1
-apt-get install -y wget curl gnupg ca-certificates locales >>"$LOG_FILE" 2>&1
+sync_clock
+# Após acertar o relógio o Ubuntu costuma iniciar as atualizações automáticas,
+# que travam o apt. As chamadas abaixo esperam até 10 min pela liberação.
+if pgrep -f "unattended-upgrade|apt.systemd.daily" >/dev/null; then
+    info "Atualizações automáticas do Ubuntu em andamento; aguardando o apt ser liberado (até 10 min)..."
+fi
+apt-get -o DPkg::Lock::Timeout=600 update -y >>"$LOG_FILE" 2>&1
+apt-get -o DPkg::Lock::Timeout=600 install -y wget curl gnupg ca-certificates locales >>"$LOG_FILE" 2>&1
 
 info "Gerando locales (en_US e pt_BR)..."
 sed -i 's/^# *\(en_US.UTF-8\)/\1/; s/^# *\(pt_BR.UTF-8\)/\1/' /etc/locale.gen
@@ -138,15 +180,15 @@ for UBU in "${VERSION_ID}" "24.04"; do
 done
 [[ $REPO_OK -eq 1 ]] || fatal "Não foi possível baixar o zabbix-release. Verifique https://repo.zabbix.com/zabbix/${ZBX_VERSION}/"
 
-dpkg -i "$TMP_DEB" >>"$LOG_FILE" 2>&1
+apt-get -o DPkg::Lock::Timeout=600 install -y "$TMP_DEB" >>"$LOG_FILE" 2>&1
 rm -f "$TMP_DEB"
-apt-get update -y >>"$LOG_FILE" 2>&1
+apt-get -o DPkg::Lock::Timeout=600 update -y >>"$LOG_FILE" 2>&1
 
 # -----------------------------------------------------------------------------
 # 4. Instalação dos pacotes
 # -----------------------------------------------------------------------------
 info "Instalando PostgreSQL, Apache e Zabbix (server, frontend, agent2)..."
-apt-get install -y \
+apt-get -o DPkg::Lock::Timeout=600 install -y \
     postgresql \
     apache2 \
     zabbix-server-pgsql \
@@ -158,7 +200,7 @@ apt-get install -y \
     zabbix-agent2 >>"$LOG_FILE" 2>&1
 
 # Plugins opcionais do agent2 (não falha se não existirem)
-apt-get install -y zabbix-agent2-plugin-postgresql >>"$LOG_FILE" 2>&1 \
+apt-get -o DPkg::Lock::Timeout=600 install -y zabbix-agent2-plugin-postgresql >>"$LOG_FILE" 2>&1 \
     || warn "Plugin PostgreSQL do agent2 não instalado (opcional)."
 
 systemctl enable --now postgresql >>"$LOG_FILE" 2>&1
@@ -204,9 +246,11 @@ ZBX_CONF=/etc/zabbix/zabbix_server.conf
 cp -n "$ZBX_CONF" "${ZBX_CONF}.orig" || true
 
 set_conf() {  # set_conf <chave> <valor> <arquivo>
-    local k="$1" v="$2" f="$3"
+    local k="$1" v="$2" f="$3" v_sed
+    # escapa \, & e | (delimitador) para o sed gravar o valor literalmente
+    v_sed=$(printf '%s' "$v" | sed -e 's/[\\&|]/\\&/g')
     if grep -qE "^#?\s*${k}=" "$f"; then
-        sed -i "0,/^#\?\s*${k}=.*/s||${k}=${v}|" "$f"
+        sed -i "0,/^#\?\s*${k}=.*/s||${k}=${v_sed}|" "$f"
     else
         echo "${k}=${v}" >> "$f"
     fi
@@ -264,6 +308,8 @@ for pool in /etc/php/${PHP_VER}/fpm/pool.d/zabbix*.conf /etc/zabbix/php-fpm.conf
 done
 
 WEB_CONF=/etc/zabbix/web/zabbix.conf.php
+# Em string PHP com aspas simples, "\" precisa ser dobrada
+PHP_DB_PASS=$(printf '%s' "$ZBX_DB_PASS" | sed -e 's/\\/\\\\/g')
 if [[ ! -f "$WEB_CONF" ]]; then
     cat > "$WEB_CONF" <<EOF
 <?php
@@ -273,7 +319,7 @@ if [[ ! -f "$WEB_CONF" ]]; then
 \$DB['PORT']                     = '0';
 \$DB['DATABASE']                 = '${ZBX_DB_NAME}';
 \$DB['USER']                     = '${ZBX_DB_USER}';
-\$DB['PASSWORD']                 = '${ZBX_DB_PASS}';
+\$DB['PASSWORD']                 = '${PHP_DB_PASS}';
 \$DB['SCHEMA']                   = '';
 \$DB['ENCRYPTION']               = false;
 \$DB['KEY_FILE']                 = '';
